@@ -9,11 +9,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// مسیر فایل دیتابیس ما
 const DB_FILE = path.join(__dirname, 'database.json');
-
-// کلید مخفی سرور برای رمزنگاری قطعاتِ کاربران (این کلید نباید لو برود)
-// در یک پروژه واقعی این را در فایل .env می‌گذارند، اما اینجا برای سادگی هاردکد کردیم
+// در یک پروژه واقعی این کلید امنیتی باید بسیار پیچیده باشد
 const SERVER_ENCRYPTION_KEY = crypto.createHash('sha256').update(String("ZeroVault_Super_Secret_Key_2026")).digest('base64').substr(0, 32);
 
 // ----------------------------------------------------
@@ -22,8 +19,7 @@ const SERVER_ENCRYPTION_KEY = crypto.createHash('sha256').update(String("ZeroVau
 function loadDatabase() {
     if (fs.existsSync(DB_FILE)) {
         try {
-            const data = fs.readFileSync(DB_FILE, 'utf8');
-            return JSON.parse(data);
+            return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
         } catch (error) {
             console.error("خطا در خواندن دیتابیس:", error);
             return {};
@@ -61,7 +57,6 @@ function decryptShard(text) {
     return decrypted;
 }
 
-// نگهداری موقت سشن‌های پیامک (نیاز به ذخیره دائمی ندارد)
 const active2FASessions = {};
 
 // ----------------------------------------------------
@@ -75,18 +70,27 @@ app.post('/api/vault/register', (req, res) => {
     }
 
     const db = loadDatabase();
+    
+    // بررسی می‌کنیم آیا کاربر از قبل وجود دارد؟
+    const isExistingUser = db[email] !== undefined;
+    const isVip = isExistingUser ? db[email].is_vip : false; // کاربر جدید پیش‌فرض عادی است
 
     // قطعه کاربر را رمزنگاری کرده و ذخیره می‌کنیم
     db[email] = {
         walletAddress: walletAddress,
         encryptedShare: encryptShard(serverShare),
-        createdAt: new Date().toISOString()
+        createdAt: isExistingUser ? db[email].createdAt : new Date().toISOString(),
+        is_vip: isVip // وضعیت VIP بودن را نگه می‌داریم
     };
 
     saveDatabase(db);
 
-    console.log(`✅ گاوصندوق برای ${email} ساخته شد و در دیتابیس ذخیره گردید.`);
-    res.json({ success: true, message: "قطعه دوم با امنیت بالا در سرور زیروچین ذخیره شد." });
+    console.log(`✅ گاوصندوق برای ${email} ذخیره شد. VIP: ${isVip}`);
+    res.json({ 
+        success: true, 
+        is_vip: isVip,
+        message: "قطعه دوم با امنیت بالا در سرور زیروچین ذخیره شد." 
+    });
 });
 
 // ----------------------------------------------------
@@ -100,13 +104,16 @@ app.post('/api/vault/request-withdraw', (req, res) => {
         return res.status(404).json({ error: "گاوصندوقی با این ایمیل یافت نشد." });
     }
 
-    // تولید یک کد تایید ۶ رقمی تصادفی
+    // *** سد امنیتی VIP ***
+    // اگر بخواهید برداشت وجه فقط برای کاربران VIP باشد، این کد را فعال کنید:
+    // if (!db[email].is_vip) {
+    //     return res.status(403).json({ error: "برداشت وجه فقط برای کاربران VIP فعال است." });
+    // }
+
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    active2FASessions[email] = { code: otpCode, expires: Date.now() + 5 * 60000 }; // انقضا: ۵ دقیقه
+    active2FASessions[email] = { code: otpCode, expires: Date.now() + 5 * 60000 }; 
 
-    // نمایش کد در لاگ سرور
     console.log(`📩 [شبیه‌ساز پیامک]: کد تایید شما برای برداشت وجه: ${otpCode}`);
-
     res.json({ success: true, message: "کد تایید به گوشی شما ارسال شد." });
 });
 
@@ -115,8 +122,8 @@ app.post('/api/vault/request-withdraw', (req, res) => {
 // ----------------------------------------------------
 app.post('/api/vault/verify-withdraw', (req, res) => {
     const { email, code } = req.body;
-
     const session = active2FASessions[email];
+    
     if (!session || session.code !== code || Date.now() > session.expires) {
         return res.status(401).json({ error: "کد تایید اشتباه است یا منقضی شده." });
     }
@@ -124,17 +131,12 @@ app.post('/api/vault/verify-withdraw', (req, res) => {
     const db = loadDatabase();
     const userVault = db[email];
     
-    if(!userVault) {
-        return res.status(404).json({ error: "داده‌های گاوصندوق یافت نشد." });
-    }
+    if(!userVault) return res.status(404).json({ error: "داده‌های گاوصندوق یافت نشد." });
 
-    // رمزگشایی قطعه
     const decryptedShare = decryptShard(userVault.encryptedShare);
-
-    // پاک کردن سشن
     delete active2FASessions[email];
 
-    console.log(`🔓 هویت ${email} تایید شد. قطعه دوم برای امضای تراکنش ارسال گردید.`);
+    console.log(`🔓 هویت ${email} تایید شد. قطعه ارسال گردید.`);
     res.json({ 
         success: true, 
         serverShare: decryptedShare,
@@ -142,12 +144,7 @@ app.post('/api/vault/verify-withdraw', (req, res) => {
     });
 });
 
-// مسیر تست برای اطمینان از روشن بودن سرور
-app.get('/', (req, res) => {
-    res.send("سرور امنیتی ZeroVault با دیتابیس فایلی روشن است!");
-});
+app.get('/', (req, res) => { res.send("سرور امنیتی ZeroVault روشن است!"); });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 سرور روی پورت ${PORT} فعال شد.`);
-});
+app.listen(PORT, () => { console.log(`🚀 سرور روی پورت ${PORT} فعال شد.`); });
