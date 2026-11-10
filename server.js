@@ -3,7 +3,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const https = require('https'); // اضافه شده برای رفع خطای رندر
+const https = require('https');
 
 const app = express();
 app.use(cors());
@@ -12,7 +12,7 @@ app.use(express.json());
 const DB_FILE = path.join(__dirname, 'database.json');
 const SERVER_ENCRYPTION_KEY = crypto.createHash('sha256').update(String("ZeroVault_Super_Secret_Key_2026")).digest('base64').substr(0, 32);
 
-// توکن شما مستقیماً اینجا قرار داده شد:
+// توکن شما:
 const TELEGRAM_TOKEN = '9179914310:AAEVDDXFJSzkEEeUZDprQSIyDNRJVka47ok';
 
 function loadDatabase() {
@@ -62,7 +62,6 @@ app.post('/api/vault/request-withdraw', (req, res) => {
     if (!db[email]) return res.status(404).json({ error: "یافت نشد." });
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
     active2FASessions[email] = { code: otpCode, expires: Date.now() + 5 * 60000 };
-    console.log(`[SMS Simulator]: کد تایید -> ${otpCode}`);
     res.json({ success: true, message: "کد تایید ارسال شد." });
 });
 
@@ -77,61 +76,47 @@ app.post('/api/vault/verify-withdraw', (req, res) => {
 app.get('/', (req, res) => { res.send("سرور امنیتی ZeroVault روشن است!"); });
 
 // ==========================================
-// موتور ربات با سیستم ضد-قطعی (HTTPS Native)
+// اتصال مستقیم تلگرام به سرور (Webhook)
 // ==========================================
-function telegramAPI(method, data) {
-    return new Promise((resolve) => {
-        const dataStr = JSON.stringify(data);
-        const options = {
-            hostname: 'api.telegram.org', port: 443,
-            path: `/bot${TELEGRAM_TOKEN}/${method}`,
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': dataStr.length }
-        };
-        const req = https.request(options, (res) => {
-            let body = '';
-            res.on('data', d => body += d);
-            res.on('end', () => {
-                try { resolve(JSON.parse(body)); } catch(e) { resolve({}); }
-            });
-        });
-        req.on('error', (e) => { console.error("Net Error:", e.message); resolve({}); });
-        req.write(dataStr);
-        req.end();
-    });
-}
-
-let lastUpdateId = 0;
-async function pollTelegram() {
-    const data = await telegramAPI('getUpdates', { offset: lastUpdateId + 1, timeout: 30 });
-    if (data && data.ok && data.result) {
-        for (const update of data.result) {
-            lastUpdateId = update.update_id;
-            if (!update.message || !update.message.text) continue;
+app.post('/bot', (req, res) => {
+    res.sendStatus(200); // تایید فوری دریافت پیام برای تلگرام
+    
+    const update = req.body;
+    if (update && update.message && update.message.text) {
+        const chatId = update.message.chat.id;
+        const text = update.message.text.trim();
+        
+        if (text === '/start') {
+            sendTelegramMessage(chatId, "🤖 سلام مدیر عزیز!\nمن با سیستم پرسرعت وب‌هوک متصل شدم و همیشه بیدارم! دستور /vip email را بفرستید.");
+        } 
+        else if (text.startsWith('/vip ')) {
+            const targetEmail = text.split(' ')[1];
+            const db = loadDatabase();
             
-            const chatId = update.message.chat.id;
-            const text = update.message.text.trim();
-            
-            if (text === '/start') {
-                await telegramAPI('sendMessage', { chat_id: chatId, text: "🤖 سلام مدیر عزیز!\nمن بیدار شدم و بدون قطعی کار می‌کنم. دستور /vip email@zerochain.ir را بفرستید." });
-            } 
-            else if (text.startsWith('/vip ')) {
-                const targetEmail = text.split(' ')[1];
-                const db = loadDatabase();
-                
-                if (db[targetEmail]) {
-                    db[targetEmail].is_vip = true;
-                    saveDatabase(db);
-                    await telegramAPI('sendMessage', { chat_id: chatId, text: `✅ عملیات موفق!\nکاربر ${targetEmail} VIP شد.` });
-                } else {
-                    await telegramAPI('sendMessage', { chat_id: chatId, text: `❌ خطا: ایمیل ${targetEmail} در دیتابیس یافت نشد.\nدلیل: کاربر باید اول حداقل یک بار دکمه «ساخت خزانه» را در سایت زده باشد تا اسمش در دیتابیس ثبت شود.` });
-                }
+            if (db[targetEmail]) {
+                db[targetEmail].is_vip = true;
+                saveDatabase(db);
+                sendTelegramMessage(chatId, `✅ عملیات موفق!\nکاربر ${targetEmail} به حالت VIP ارتقا یافت.`);
+            } else {
+                sendTelegramMessage(chatId, `❌ خطا: ایمیل ${targetEmail} در دیتابیس سرور یافت نشد.`);
             }
         }
     }
-    setTimeout(pollTelegram, 2000);
+});
+
+function sendTelegramMessage(chatId, text) {
+    const dataStr = JSON.stringify({ chat_id: chatId, text: text });
+    const options = {
+        hostname: 'api.telegram.org', port: 443,
+        path: `/bot${TELEGRAM_TOKEN}/sendMessage`,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(dataStr) }
+    };
+    const req = https.request(options);
+    req.on('error', (e) => console.error(e));
+    req.write(dataStr);
+    req.end();
 }
-pollTelegram();
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => { console.log(`🚀 سرور روی پورت ${PORT} فعال شد.`); });
