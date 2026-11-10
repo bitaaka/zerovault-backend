@@ -11,8 +11,7 @@ app.use(express.json());
 
 const DB_FILE = path.join(__dirname, 'database.json');
 // در یک پروژه واقعی این کلید امنیتی باید بسیار پیچیده باشد
-const SERVER_ENCRYPTION_KEY = crypto.createHash('sha256').update(String("ZeroVault_Super_Secret_Key_2026")).digest('base64').substr(0, 32);
-
+const TELEGRAM_TOKEN = '9179914310:AAEVDDXFJSzkEEeUZDprQSIyDNRJVka47ok';
 // ----------------------------------------------------
 // توابع مدیریت دیتابیس فایلی
 // ----------------------------------------------------
