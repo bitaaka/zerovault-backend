@@ -12,7 +12,7 @@ app.use(express.json());
 const DB_FILE = path.join(__dirname, 'database.json');
 const SERVER_ENCRYPTION_KEY = crypto.createHash('sha256').update(String("ZeroVault_Super_Secret_Key_2026")).digest('base64').substr(0, 32);
 
-// توکن شما:
+// توکن شما
 const TELEGRAM_TOKEN = '9179914310:AAEVDDXFJSzkEEeUZDprQSIyDNRJVka47ok';
 
 function loadDatabase() {
@@ -76,47 +76,64 @@ app.post('/api/vault/verify-withdraw', (req, res) => {
 app.get('/', (req, res) => { res.send("سرور امنیتی ZeroVault روشن است!"); });
 
 // ==========================================
-// اتصال مستقیم تلگرام به سرور (Webhook)
+// موتور ربات + سیستم ضد خواب سرور
 // ==========================================
-app.post('/bot', (req, res) => {
-    res.sendStatus(200); // تایید فوری دریافت پیام برای تلگرام
-    
-    const update = req.body;
-    if (update && update.message && update.message.text) {
-        const chatId = update.message.chat.id;
-        const text = update.message.text.trim();
-        
-        if (text === '/start') {
-            sendTelegramMessage(chatId, "🤖 سلام مدیر عزیز!\nمن با سیستم پرسرعت وب‌هوک متصل شدم و همیشه بیدارم! دستور /vip email را بفرستید.");
-        } 
-        else if (text.startsWith('/vip ')) {
-            const targetEmail = text.split(' ')[1];
-            const db = loadDatabase();
+function telegramAPI(method, data) {
+    return new Promise((resolve) => {
+        const dataStr = JSON.stringify(data);
+        const options = {
+            hostname: 'api.telegram.org', port: 443,
+            path: `/bot${TELEGRAM_TOKEN}/${method}`,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(dataStr) }
+        };
+        const req = https.request(options, (res) => {
+            let body = '';
+            res.on('data', d => body += d);
+            res.on('end', () => { try { resolve(JSON.parse(body)); } catch(e) { resolve({}); } });
+        });
+        req.on('error', () => resolve({}));
+        req.write(dataStr);
+        req.end();
+    });
+}
+
+let lastUpdateId = 0;
+async function pollTelegram() {
+    const data = await telegramAPI('getUpdates', { offset: lastUpdateId + 1, timeout: 5 });
+    if (data && data.ok && data.result) {
+        for (const update of data.result) {
+            lastUpdateId = update.update_id;
+            if (!update.message || !update.message.text) continue;
             
-            if (db[targetEmail]) {
-                db[targetEmail].is_vip = true;
-                saveDatabase(db);
-                sendTelegramMessage(chatId, `✅ عملیات موفق!\nکاربر ${targetEmail} به حالت VIP ارتقا یافت.`);
-            } else {
-                sendTelegramMessage(chatId, `❌ خطا: ایمیل ${targetEmail} در دیتابیس سرور یافت نشد.`);
+            const chatId = update.message.chat.id;
+            const text = update.message.text.trim();
+            
+            if (text === '/start') {
+                await telegramAPI('sendMessage', { chat_id: chatId, text: "🤖 سلام مدیر عزیز!\nقفل تلگرام شکسته شد! حالا هر دستوری بدهید فوراً اجرا می‌کنم.\nمثال: /vip email" });
+            } 
+            else if (text.startsWith('/vip ')) {
+                const targetEmail = text.split(' ')[1];
+                const db = loadDatabase();
+                
+                if (db[targetEmail]) {
+                    db[targetEmail].is_vip = true;
+                    saveDatabase(db);
+                    await telegramAPI('sendMessage', { chat_id: chatId, text: `✅ عملیات موفق!\nکاربر ${targetEmail} VIP شد.` });
+                } else {
+                    await telegramAPI('sendMessage', { chat_id: chatId, text: `❌ خطا: کاربر یافت نشد.\nمطمئن شوید کاربر حداقل یک‌بار دکمه «تست اتصال» را در سایت زده باشد تا ایمیلش ثبت شود.` });
+                }
             }
         }
     }
-});
-
-function sendTelegramMessage(chatId, text) {
-    const dataStr = JSON.stringify({ chat_id: chatId, text: text });
-    const options = {
-        hostname: 'api.telegram.org', port: 443,
-        path: `/bot${TELEGRAM_TOKEN}/sendMessage`,
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(dataStr) }
-    };
-    const req = https.request(options);
-    req.on('error', (e) => console.error(e));
-    req.write(dataStr);
-    req.end();
+    setTimeout(pollTelegram, 3000);
 }
+pollTelegram();
+
+// سیستم بیدار نگه داشتن (جلوگیری از خاموش شدن رندر)
+setInterval(() => {
+    https.get('https://zerovault-api.onrender.com/').on('error', () => {});
+}, 5 * 60 * 1000);
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => { console.log(`🚀 سرور روی پورت ${PORT} فعال شد.`); });
